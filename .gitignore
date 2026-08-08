@@ -1,0 +1,18 @@
+# Secrets
+.env
+secrets/
+*credentials*.json
+
+# Runtime data — conversation history, learned knowledge, logs
+*.db
+*.db-journal
+knowledge.md
+*.log
+
+# Editing backups this project makes before risky changes
+*.before_*
+
+# Python
+venv/
+__pycache__/
+*.pyc
