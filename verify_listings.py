@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Проверка ответов: объекты только из базы, без заглушек и длинных тире."""
 import asyncio
 import re
 import sys
@@ -27,11 +26,9 @@ def norm_price(s):
 
 
 def base_title_key(title):
-    """«Parklane (Jomthien)» -> «parklane»: модель опускает суффикс района."""
     return re.sub(r"\s*\([^)]*\)\s*$", "", title or "").strip().lower()
 
 
-# Заглушки ищем только в связке с единицами - голый «?» есть в любом URL.
 PLACEHOLDER_RE = re.compile(
     r"\?\s*(м²|m²|спал|bed|THB|бат)|не указано|нет данных|N/A", re.I
 )

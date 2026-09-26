@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Smoke-тест логики бота без Telegram: база объектов + диалог + заявка."""
 import asyncio
 import sys
 from pathlib import Path
@@ -45,7 +44,7 @@ async def main():
     print(reply)
     history.append({"role": "assistant", "content": reply})
 
-    # Сверяем, что названия из ответа реально есть в таблице.
+
     titles = [r["Название"] for r in rb.LISTINGS]
     hits = [t for t in titles if t and t.lower()[:18] in reply.lower()]
     print(f"\n[проверка] названий из базы найдено в ответе: {len(hits)} -> {hits[:5]}")

@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-"""
-stats.py — кто писал боту, сколько и с каким результатом.
-
-    venv/bin/python3 stats.py            # сводка
-    venv/bin/python3 stats.py 7232311321 # весь диалог одного человека
-"""
 import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone

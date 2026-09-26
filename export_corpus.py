@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-"""Экспорт корпуса диалогов в JSONL — на будущее (анализ, разметка, оценка).
-
-Один объект на диалог: реплики + метаданные хода. Персональные данные из
-заявок сюда не попадают, только текст переписки.
-
-    venv/bin/python3 export_corpus.py > corpus.jsonl
-"""
 import json
 import sqlite3
 import sys

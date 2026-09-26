@@ -1,21 +1,4 @@
 #!/usr/bin/env python3
-"""
-learn.py — «обучение» Андрея на собственных диалогах.
-
-Раз в сутки берёт новые переписки из realty_bot.db, прогоняет их через
-модель и обновляет knowledge.md: частые вопросы клиентов, возражения,
-удачные формулировки, пробелы в базе объектов. Бот перечитывает этот файл
-и подмешивает его в системный промпт.
-
-Весов модели это не меняет: тут накопление контекста, а не fine-tuning.
-Чем больше диалогов, тем точнее выжимка. Если позже понадобится настоящее
-дообучение, у OpenAI оно есть - собранный корпус (export_corpus.py) как раз
-и станет для него обучающей выборкой.
-
-Запуск вручную:  cd /opt/awelabs-realty-bot && venv/bin/python3 learn.py
-              (--dry — показать выжимку, но не записывать)
-По расписанию — таймер realty-demo-learn.timer.
-"""
 import os
 import sys
 import sqlite3
@@ -29,16 +12,15 @@ load_dotenv(BASE_DIR / ".env")
 
 DB_PATH = BASE_DIR / "realty_bot.db"
 KNOWLEDGE_PATH = BASE_DIR / "knowledge.md"
-# Разбор диалогов - разовая фоновая задача, тут не жалко модель поумнее
-# чатовой, но и рассуждающая не нужна.
+
+
 MODEL = "gpt-4.1"
 MAX_TOKENS = 8000
 TZ = timezone(timedelta(hours=7))
 
-# Меньше этого числа новых реплик — выжимку не пересобираем, чтобы не жечь
-# токены на паре сообщений.
+
 MIN_NEW_MESSAGES = 10
-# Сколько диалогов максимум отдавать модели за один прогон.
+
 MAX_DIALOGS = 60
 KNOWLEDGE_LIMIT_CHARS = 6000
 
@@ -72,7 +54,6 @@ def meta_set(conn, k, v):
 
 
 def collect_dialogs(conn, since_id):
-    """Диалоги, где есть хоть одна новая реплика. Возвращает (текст, max_id, n)."""
     rows = conn.execute(
         "SELECT id, user_id, role, content, created_at, led_to_lead "
         "FROM messages WHERE id > ? ORDER BY id",

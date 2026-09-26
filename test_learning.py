@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Прогон цикла обучения: диалоги -> корпус -> learn.py -> knowledge.md."""
 import asyncio
 import sys
 from pathlib import Path

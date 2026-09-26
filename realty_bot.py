@@ -1,21 +1,4 @@
 #!/usr/bin/env python3
-"""
-realty_bot.py — публичный демо-бот: ИИ-менеджер агентства недвижимости в Паттайе.
-
-Отвечает всем без whitelist. Единственное ограничение — rate limit
-(RATE_LIMIT_PER_HOUR сообщений с одного user_id в час).
-
-База объектов — Google-таблица (лист Sales), грузится в память при старте
-и обновляется раз в SHEET_REFRESH_MIN минут. Список объектов подмешивается
-в системный промпт, чтобы модель не выдумывала лоты.
-
-Когда клиент оставил имя и телефон, модель вызывает инструмент create_lead —
-бот шлёт уведомление владельцу в Telegram и пишет заявку в SQLite.
-
-Запуск вручную:
-    cd /opt/awelabs-realty-bot && venv/bin/python3 realty_bot.py
-По расписанию — systemd-юнит realty-demo-bot.service.
-"""
 import os
 import re
 import html
@@ -40,11 +23,11 @@ from telegram.ext import (
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 
-# ---------------- НАСТРОЙКИ ----------------
+
 BOT_TOKEN = os.environ.get("REALTY_BOT_TOKEN", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-# Куда падают уведомления о заявках. Владелец должен нажать /start у этого
-# бота, иначе Telegram не даст боту написать первым.
+
+
 OWNER_CHAT_ID = os.environ.get("REALTY_OWNER_CHAT_ID", "")
 
 SHEET_ID = os.environ.get(
@@ -56,44 +39,38 @@ CREDS_PATH = BASE_DIR / "secrets" / "sheets_credentials.json"
 DB_PATH = BASE_DIR / "realty_bot.db"
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-# gpt-4.1-mini: втрое быстрее и в 13 раз дешевле Opus на нашем объёме промпта,
-# при этом надёжнее 4o-mini держит запрет на выдумывание объектов.
-# Рассуждающие модели (gpt-5.x) для чата не годятся: 6-7 секунд на ответ и
-# сотни токенов уходят в reasoning.
+
+
 MODEL = "gpt-4.1-mini"
 MAX_COMPLETION_TOKENS = 1200
 
 RATE_LIMIT_PER_HOUR = 60
-# Второй контур: час можно пересидеть и продолжить, сутки - нет.
+
 USER_DAILY_LIMIT = 200
-# Общий потолок на бота. Защита от того, что ссылку раскидают по чатам и
-# счёт за токены вырастет за ночь. Достигнут - бот вежливо закрывается.
+
+
 GLOBAL_DAILY_LIMIT = 3000
-# Не больше одного сообщения в MIN_SECONDS_BETWEEN секунд с одного человека.
+
 MIN_SECONDS_BETWEEN = 2
-# Длинное сообщение - это чужой текст, который клиент вставил целиком, либо
-# попытка раздуть счёт. Обрезаем, диалогу это не мешает.
+
+
 MAX_INPUT_CHARS = 1500
-# Сколько заявок с одного человека принимаем за сутки: уведомления владельцу
-# нельзя превращать в канал для спама.
+
+
 MAX_LEADS_PER_DAY = 3
-# Сколько уведомлений о новых посетителях шлём владельцу за час. При наплыве
-# фейковых аккаунтов личка не должна превращаться в свалку.
+
+
 MAX_NEW_VISITOR_ALERTS_PER_HOUR = 20
 
-# Бюджет в долларах на календарный месяц. Держим НИЖЕ лимита, выставленного
-# в панели OpenAI: если первым сработает провайдер, клиенты увидят ошибки
-# API, а так бот закрывается сам и вежливо. Цены gpt-4.1-mini за 1М токенов.
+
 MONTHLY_BUDGET_USD = 17.0
 PRICE_IN_PER_MTOK = 0.40
 PRICE_OUT_PER_MTOK = 1.60
 SHEET_REFRESH_MIN = 30
-HISTORY_TURNS = 20          # сколько последних реплик подмешивать в контекст
-TZ = timezone(timedelta(hours=7))   # Asia/Bangkok
+HISTORY_TURNS = 20
+TZ = timezone(timedelta(hours=7))
 
-# Лимит объясняем словами и с точным временем: молчаливое повторение одной
-# и той же фразы выглядит как поломка, особенно когда клиент спрашивает
-# «почему?».
+
 RATE_LIMIT_TEXT = {
     "ru": (
         "Извините, я вынужден прерваться: это демо-версия, и в ней стоит "
@@ -129,15 +106,13 @@ BUSY_TEXT = {
            "หากเร่งด่วน ฝากชื่อและเบอร์โทรไว้ได้ครับ"),
 }
 
-# Длинное тире и минус - характерная примета сгенерированного текста. Живые
-# люди в мессенджерах пишут обычный дефис, поэтому вычищаем их и в статике,
-# и в ответах модели (промпта мало - модель всё равно иногда их ставит).
+
 DASHES = {
-    "—": "-",   # em dash
-    "–": "-",   # en dash
-    "‒": "-",   # figure dash
-    "−": "-",   # minus sign
-    "―": "-",   # horizontal bar
+    "—": "-",
+    "–": "-",
+    "‒": "-",
+    "−": "-",
+    "―": "-",
 }
 
 
@@ -147,22 +122,18 @@ def short_dashes(text: str) -> str:
     return text
 
 
-# Голая ссылка на папку Google Drive занимает три строки и выглядит как спам.
-# Прячем её под слово «Фото» - в Telegram это возможно только через разметку,
-# поэтому отправляем сообщения в режиме HTML.
 URL_RE = re.compile(r'https?://[^\s<>"\']+')
 PHOTO_LABEL = {"ru": "Фото", "en": "Photos", "th": "รูปภาพ"}
 TRAILING_PUNCT = ".,;:!?)»]"
 
 
 def linkify(text: str, lang: str = "ru") -> str:
-    """Экранирует текст под HTML и заменяет URL на слово-ссылку."""
     label = PHOTO_LABEL.get(lang, PHOTO_LABEL["ru"])
     out = []
     pos = 0
     for m in URL_RE.finditer(text):
         url, trail = m.group(0), ""
-        # Точку или скобку в конце фразы модель нередко приклеивает к ссылке.
+
         while url and url[-1] in TRAILING_PUNCT:
             trail = url[-1] + trail
             url = url[:-1]
@@ -177,9 +148,9 @@ def linkify(text: str, lang: str = "ru") -> str:
 
 log = logging.getLogger("realty_bot")
 
-# ---------------- БАЗА ----------------
+
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-conn.execute("PRAGMA journal_mode=WAL")   # learn.py читает базу параллельно
+conn.execute("PRAGMA journal_mode=WAL")
 conn.execute("""CREATE TABLE IF NOT EXISTS messages(
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id    INTEGER NOT NULL,
@@ -188,8 +159,7 @@ conn.execute("""CREATE TABLE IF NOT EXISTS messages(
     created_at TEXT    NOT NULL)""")
 conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id, created_at)")
 
-# Метаданные для корпуса. Добавляем по одной, чтобы миграция была идемпотентной
-# и не роняла бота на уже существующей базе.
+
 for _col, _type in (
     ("lang", "TEXT"),
     ("model", "TEXT"),
@@ -197,15 +167,15 @@ for _col, _type in (
     ("input_tokens", "INTEGER"),
     ("output_tokens", "INTEGER"),
     ("latency_ms", "INTEGER"),
-    ("username", "TEXT"),         # @ник на момент реплики, если он есть
-    ("first_name", "TEXT"),       # имя из профиля Telegram
-    ("offered_ids", "TEXT"),      # какие объекты из базы прозвучали в ответе
-    ("led_to_lead", "INTEGER"),   # 1, если на этом ходу создалась заявка
+    ("username", "TEXT"),
+    ("first_name", "TEXT"),
+    ("offered_ids", "TEXT"),
+    ("led_to_lead", "INTEGER"),
 ):
     try:
         conn.execute(f"ALTER TABLE messages ADD COLUMN {_col} {_type}")
     except sqlite3.OperationalError:
-        pass   # колонка уже есть
+        pass
 
 conn.execute("CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT)")
 conn.execute("""CREATE TABLE IF NOT EXISTS leads(
@@ -224,7 +194,6 @@ def now_tz():
 
 
 def detect_lang(text):
-    """Грубая эвристика для корпуса — точность модели тут не нужна."""
     if re.search(r"[Ѐ-ӿ]", text):
         return "ru"
     if re.search(r"[฀-๿]", text):
@@ -233,7 +202,6 @@ def detect_lang(text):
 
 
 def save_message(user_id, role, content, user=None, **meta):
-    """user - telegram.User, чтобы в истории остался ник, а не голый id."""
     cols = ["user_id", "role", "content", "created_at", "lang"]
     vals = [user_id, role, content, now_tz().isoformat(), detect_lang(content)]
     if user is not None:
@@ -272,7 +240,6 @@ def load_history(user_id, limit=HISTORY_TURNS):
 
 
 def rate_limit_state(user_id):
-    """(сколько сообщений за час, через сколько минут освободится слот)."""
     now = now_tz()
     since = (now - timedelta(hours=1)).isoformat()
     rows = conn.execute(
@@ -289,7 +256,6 @@ def rate_limit_state(user_id):
 
 
 def messages_today(user_id=None):
-    """Сколько клиентских реплик за сутки: у одного человека или у всех."""
     since = (now_tz() - timedelta(days=1)).isoformat()
     if user_id is None:
         q = "SELECT COUNT(*) FROM messages WHERE role='user' AND created_at>=?"
@@ -303,7 +269,6 @@ def messages_today(user_id=None):
 
 
 def spend_this_month():
-    """Потрачено с 1 числа, по фактическим токенам из корпуса."""
     now = now_tz()
     since = now.replace(day=1, hour=0, minute=0, second=0,
                         microsecond=0).isoformat()
@@ -327,7 +292,6 @@ def seconds_since_last(user_id):
 
 
 def is_new_visitor(user_id):
-    """Ни одной реплики в базе - значит человек здесь впервые."""
     row = conn.execute(
         "SELECT 1 FROM messages WHERE user_id=? LIMIT 1", (user_id,)
     ).fetchone()
@@ -344,7 +308,6 @@ def new_visitors_last_hour():
 
 
 async def notify_new_visitor(user, first_text, context):
-    """Сообщает владельцу, что боту написал новый человек."""
     if not OWNER_CHAT_ID or str(user.id) == str(OWNER_CHAT_ID):
         return
     if new_visitors_last_hour() > MAX_NEW_VISITOR_ALERTS_PER_HOUR:
@@ -354,8 +317,8 @@ async def notify_new_visitor(user, first_text, context):
     name = html.escape(user.first_name or "без имени")
     handle = f"@{html.escape(user.username)}" if user.username else "без ника"
     body = html.escape((first_text or "").strip()[:300]) or "(нажал /start)"
-    # Ни id, ни ссылки: в уведомлении нужно только кто и с чем пришёл.
-    # Всё остальное лежит в базе, показывает stats.py.
+
+
     text = (
         f"Новый посетитель бота: {name} ({handle})\n\n"
         f"Написал: «{body}»"
@@ -389,15 +352,11 @@ def save_lead(user_id, username, name, phone, summary):
     return cur.lastrowid
 
 
-# ---------------- БАЗА ОБЪЕКТОВ ----------------
-# Заполняется при старте и обновляется таймером. Читаем из неё только в
-# обработчиках сообщений, поэтому обычной переменной достаточно.
 LISTINGS: list[dict] = []
 LISTINGS_UPDATED: str = "никогда"
 
 
 def fetch_listings():
-    """Читает лист Sales. Возвращает список словарей."""
     import gspread
 
     gc = gspread.service_account(filename=str(CREDS_PATH))
@@ -412,7 +371,7 @@ def fetch_listings():
         if not any(c.strip() for c in row):
             continue
         rec = dict(zip(headers, [c.strip() for c in row]))
-        # Служебная строка «Обновлено: ...» лежит в первой колонке без остальных.
+
         if rec.get(headers[0], "").startswith("Обновлено"):
             continue
         if not rec.get("Название"):
@@ -422,15 +381,14 @@ def fetch_listings():
 
 
 def listings_block(rows=None):
-    """Текстовый блок с объектами для системного промпта."""
     rows = LISTINGS if rows is None else rows
     if not rows:
         return "ПУСТО: под условия клиента не подходит ни один объект."
 
     lines = []
     for r in rows:
-        # Пустые поля пропускаем: заглушку модель норовит вставить в ответ
-        # клиенту («площадь: ? м²»), а это выглядит как сбой.
+
+
         parts = [f"[{r.get('ID', '')}]", r.get("Название", "")]
         for label, key, suffix in (
             ("район", "Район", ""),
@@ -572,13 +530,11 @@ Wantana Village в Noen Plubwan - вилла с бассейном, 4 спаль
 из блока выше. Без длинных тире. Без markdown. Коротко. Имя и телефон \
 вместе - сразу вызывай create_lead."""
 
-# Файл с выжимкой из прошлых диалогов. Пополняется learn.py раз в сутки,
-# перечитывается вместе с базой объектов.
+
 KNOWLEDGE_PATH = BASE_DIR / "knowledge.md"
 KNOWLEDGE = ""
 
-# Проверенные факты об агентстве. Правится руками, бот перечитывает вместе
-# с базой объектов. Всё, чего в файле нет, боту запрещено выдумывать.
+
 COMPANY_PATH = BASE_DIR / "company.md"
 COMPANY = ""
 
@@ -596,7 +552,6 @@ def load_knowledge():
 
 
 def load_company():
-    """Комментарии (#) в промпт не тащим - это заметки для человека."""
     global COMPANY
     try:
         raw = COMPANY_PATH.read_text(encoding="utf-8")
@@ -678,7 +633,7 @@ LEAD_TOOL = {
 
 def build_system_prompt(rows=None, criteria=None, filtered=False):
     rows = LISTINGS if rows is None else rows
-    # Отфильтрованное режем по порядку, неотфильтрованное - разнообразим.
+
     shown = (rows[:MAX_LISTINGS_IN_PROMPT] if filtered
              else diverse_sample(rows))
     if filtered:
@@ -705,8 +660,6 @@ def build_system_prompt(rows=None, criteria=None, filtered=False):
 
 
 def prompt_version():
-    """Отпечаток инструкций без базы объектов — чтобы в корпусе было видно,
-    на какой версии промпта получен ответ."""
     import hashlib
 
     skeleton = SYSTEM_TEMPLATE.format(
@@ -716,11 +669,6 @@ def prompt_version():
     return hashlib.sha1(skeleton.encode("utf-8")).hexdigest()[:8]
 
 
-# ---------------- ФИЛЬТР ПО УСЛОВИЯМ КЛИЕНТА ----------------
-# Модель уровня mini не справляется отфильтровать 84 строки в уме: показывает
-# 4 этаж на запрос «не ниже 7» и даже перевирает цифры. Поэтому условия
-# извлекаем отдельным дешёвым вызовом, фильтруем кодом, а в промпт кладём
-# только подходящее. Нарушить условие тогда физически нечем.
 MAX_LISTINGS_IN_PROMPT = 30
 
 CRITERIA_SCHEMA = {
@@ -755,8 +703,6 @@ def _num(v):
     return int(digits) if digits else None
 
 
-# Модель возвращает то «Квартира», то «Кондо», то «apartment» - в базе тип
-# один. Без нормализации фильтр молча отдаёт ноль совпадений.
 TYPE_SYNONYMS = {
     "кондо": ("кондо", "квартир", "апартамент", "студи", "condo", "apartment", "flat"),
     "дом": ("дом", "house", "таунхаус", "townhouse", "коттедж"),
@@ -765,7 +711,7 @@ TYPE_SYNONYMS = {
     "здание": ("здани", "building"),
 }
 
-# Районы клиент называет по-русски, в базе они по-английски.
+
 DISTRICT_SYNONYMS = {
     "jomthien": ("джомтьен", "джомтьён", "jomtien", "jomthien"),
     "pratumnak": ("пратумнак", "пратамнак", "pratumnak"),
@@ -781,7 +727,6 @@ DISTRICT_SYNONYMS = {
 
 
 def _normalize(value, table):
-    """Приводит то, что назвал клиент, к написанию из базы."""
     v = (value or "").strip().lower()
     if not v:
         return None
@@ -792,7 +737,6 @@ def _normalize(value, table):
 
 
 async def extract_criteria(history):
-    """Вытаскивает жёсткие условия из диалога. Ошибка -> пустые условия."""
     convo = "\n".join(
         f"{'Клиент' if m['role'] == 'user' else 'Андрей'}: {m['content']}"
         for m in history[-8:]
@@ -821,7 +765,6 @@ async def extract_criteria(history):
 
 
 def filter_listings(criteria):
-    """Оставляет объекты, подходящие под ВСЕ названные условия."""
     if not criteria or not any(criteria.get(k) for k in
                                ("price_max", "price_min", "floor_min",
                                 "bedrooms_min", "district", "prop_type")):
@@ -840,7 +783,7 @@ def filter_listings(criteria):
             continue
         if criteria.get("price_min") and (price is None or price < criteria["price_min"]):
             continue
-        # Этаж не заполнен - доказать, что он подходит, нельзя. Не показываем.
+
         if criteria.get("floor_min") and (floor is None or floor < criteria["floor_min"]):
             continue
         if criteria.get("bedrooms_min") and (beds is None or beds < criteria["bedrooms_min"]):
@@ -854,12 +797,6 @@ def filter_listings(criteria):
 
 
 def diverse_sample(rows, n=MAX_LISTINGS_IN_PROMPT):
-    """
-    Когда условий ещё нет, в промпт идёт срез базы. Простое rows[:n] дало бы
-    первые строки таблицы - соседние по цене и типу, и «покажи разное» стало
-    бы невыполнимым. Поэтому берём равномерно по всему ценовому диапазону и
-    добираем недостающие типы.
-    """
     priced = sorted(
         (r for r in rows if _num(r.get("Цена, THB"))),
         key=lambda r: _num(r.get("Цена, THB")),
@@ -875,7 +812,7 @@ def diverse_sample(rows, n=MAX_LISTINGS_IN_PROMPT):
             seen.add(id(r))
             out.append(r)
 
-    # Если какой-то тип не попал в срез, подменяем им ближайший дубль.
+
     have = {(r.get("Тип") or "").lower() for r in out}
     for r in priced:
         t = (r.get("Тип") or "").lower()
@@ -906,12 +843,6 @@ def criteria_text(criteria):
 
 
 def offered_ids(reply, rows=None):
-    """
-    Какие объекты прозвучали в ответе. Опознаём по цене - она уникальнее
-    названия, которое модель сокращает. Искать надо только среди показанных
-    модели строк: у разных объектов цены совпадают, и по всей базе получались
-    ложные срабатывания.
-    """
     digits = re.sub(r"\D", "", reply)
     found = []
     for r in (LISTINGS if rows is None else rows):
@@ -923,37 +854,26 @@ def offered_ids(reply, rows=None):
     return ",".join(found)
 
 
-# ---------------- ИИ ----------------
-import json  # noqa: E402
-from openai import AsyncOpenAI  # noqa: E402  (после load_dotenv)
+import json
+from openai import AsyncOpenAI
 
 ai = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 
 async def ask_ai(history, user_id, username, context):
-    """
-    Прогоняет диалог через модель.
 
-    Возвращает (текст ответа, метаданные хода). Метаданные копятся в корпус:
-    токены, задержка, версия промпта, какие объекты прозвучали, дошло ли до
-    заявки. На поведение бота они не влияют.
-    """
-    # Сначала вытаскиваем жёсткие условия и фильтруем базу кодом - модели
-    # достаётся только то, что реально подходит.
+
     criteria, crit_tokens = await extract_criteria(history)
     rows, filtered = filter_listings(criteria)
 
-    # У OpenAI системный промпт - первое сообщение списка, а не отдельное поле.
+
     messages = [{
         "role": "system",
         "content": build_system_prompt(rows, criteria, filtered),
     }]
     messages.extend(history)
 
-    # Промпт написан по-русски и перетягивает модель на русский даже когда
-    # клиент пишет по-английски. Инструкции в промпте не хватает, поэтому
-    # язык определяем сами и напоминаем последним системным сообщением -
-    # оно ближе всего к точке генерации и весит больше.
+
     last_user = next(
         (m["content"] for m in reversed(history) if m.get("role") == "user"), ""
     )
@@ -962,8 +882,8 @@ async def ask_ai(history, user_id, username, context):
         hint = ("ลูกค้าเขียนเป็นภาษาไทย. Your entire reply MUST be in THAI. "
                 "Do not answer in Russian or English.")
     elif lang == "en":
-        # Латиница неоднозначна: это может быть и английский, и русский
-        # транслитом («ishu kvartiru»). Жёстко английский не навязываем.
+
+
         hint = ("The client wrote in Latin script. Reply in the SAME language "
                 "they used - English by default, but if they are writing "
                 "Russian in Latin transliteration, reply in normal Russian. "
@@ -985,7 +905,7 @@ async def ask_ai(history, user_id, username, context):
         log.info("условия: %s -> подошло %s из %s",
                  criteria_text(criteria) or "-", len(rows), len(LISTINGS))
 
-    for _ in range(4):  # запас на пару вызовов функции
+    for _ in range(4):
         resp = await ai.chat.completions.create(
             model=MODEL,
             max_completion_tokens=MAX_COMPLETION_TOKENS,
@@ -1005,7 +925,7 @@ async def ask_ai(history, user_id, username, context):
         if not msg.tool_calls:
             break
 
-        # Ответ модели с вызовами функций возвращаем в историю как есть.
+
         messages.append({
             "role": "assistant",
             "content": msg.content,
@@ -1045,12 +965,11 @@ async def ask_ai(history, user_id, username, context):
 
 
 async def handle_lead(data, user_id, username, context):
-    """Сохраняет заявку и шлёт уведомление владельцу."""
     name = (data.get("name") or "").strip()[:100]
     phone = (data.get("phone") or "").strip()[:50]
     summary = (data.get("summary") or "").strip()[:500]
 
-    # Один человек не может завалить владельца уведомлениями.
+
     if leads_today(user_id) >= MAX_LEADS_PER_DAY:
         log.warning("превышен лимит заявок для %s - уведомление не шлём", user_id)
         return
@@ -1071,11 +990,10 @@ async def handle_lead(data, user_id, username, context):
     try:
         await context.bot.send_message(chat_id=OWNER_CHAT_ID, text=text, parse_mode="HTML")
     except Exception as e:
-        # Уведомление не должно ронять диалог с клиентом.
+
         log.error("не отправил уведомление о заявке #%s: %s", lead_id, e)
 
 
-# ---------------- ХЕНДЛЕРЫ ----------------
 GREETING = short_dashes(
     "Здравствуйте! Меня зовут Андрей, я консультант по недвижимости в "
     "Паттайе. Помогу подобрать квартиру, дом или виллу под ваш бюджет."
@@ -1102,26 +1020,24 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not text:
         return
 
-    # Только личка. В группе бот отвечал бы всем подряд и сливал бы туда
-    # подборки; заодно это закрывает добавление бота в чужие чаты.
+
     if chat.type != "private":
         log.info("сообщение не из лички (%s, chat=%s) - игнорирую",
                  chat.type, chat.id)
         return
 
-    # Обрезаем простыни: 4000 символов чужого текста в промпте нам не нужны.
+
     if len(text) > MAX_INPUT_CHARS:
         log.info("обрезал сообщение от %s: %s символов", user.id, len(text))
         text = text[:MAX_INPUT_CHARS]
 
-    # Владельца не ограничиваем: он показывает бота заказчикам, упереться
-    # в лимит посреди демонстрации - худшее, что может случиться.
+
     is_owner = OWNER_CHAT_ID and str(user.id) == str(OWNER_CHAT_ID)
     lang = detect_lang(text)
 
     if not is_owner:
-        # Флуд: молча пропускаем, отвечать на каждое сообщение спамера -
-        # значит платить за него.
+
+
         if seconds_since_last(user.id) < MIN_SECONDS_BETWEEN:
             log.info("флуд от %s - пропускаю", user.id)
             return
@@ -1179,7 +1095,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # В корпус кладём исходный текст, в Telegram - с оформленными ссылками.
+
     save_message(user.id, "assistant", reply, user=user, **meta)
     await update.message.reply_text(
         linkify(reply, lang),
@@ -1190,7 +1106,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def refresh_listings_job(context: ContextTypes.DEFAULT_TYPE):
     await load_listings()
-    # knowledge.md переписывает learn.py в своём процессе — перечитываем.
+
     load_company()
     log.info("расход за месяц: $%.2f из $%.2f",
              spend_this_month(), MONTHLY_BUDGET_USD)
@@ -1201,7 +1117,6 @@ async def refresh_listings_job(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def load_listings():
-    """Читает таблицу в отдельном потоке — gspread синхронный."""
     global LISTINGS, LISTINGS_UPDATED
     try:
         data = await asyncio.to_thread(fetch_listings)
